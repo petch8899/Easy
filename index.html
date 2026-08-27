@@ -9,7 +9,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@pdf-lib/fontkit@1.1.1/dist/fontkit.umd.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.6.347/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 
 <style>
   :root{
@@ -319,7 +319,7 @@
    EasyPDF — แก้ไขข้อความใน PDF โดยตรงในเบราว์เซอร์ (ไม่มีการอัปโหลดขึ้นเซิร์ฟเวอร์)
    ================================================================== */
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.6.347/pdf.worker.min.js';
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
 // ---- font library: Thai-capable fonts (fetched + embedded) + built-in standard fonts (instant, Latin-only) ----
 const FONT_LIBRARY = [
@@ -463,7 +463,11 @@ async function embedSelectedFont(fontKey, bold){
       fontkitRegisteredDocs.add(state.editDoc);
     }
     const bytes = await ensureFontBytes(entry.key, bold);
-    font = await state.editDoc.embedFont(bytes, {subset:true});
+    // subset:false — the in-app preview renderer (pdf.js) has trouble rasterizing
+    // pdf-lib's subsetted font glyph tables, which makes new text silently invisible
+    // in the preview even though it's correctly embedded in the file. Full embedding
+    // is slightly larger but renders reliably everywhere.
+    font = await state.editDoc.embedFont(bytes, {subset:false});
   }
   docCache[cacheKey] = font;
   return font;
