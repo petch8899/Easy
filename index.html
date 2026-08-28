@@ -756,6 +756,36 @@ function setMode(m){
 }
 
 // ================= CANVAS RENDER + HIT-TESTING =================
+// Word-processor-exported PDFs (Word, etc.) sometimes split a single visual word into
+// several separate text fragments — most commonly the very first letter — due to how
+// per-character kerning gets encoded. Left unmerged, each fragment becomes its own
+// clickable "item", so clicking a word can select only part of it (e.g. "est2" without
+// the leading "T"), leaving the rest untouched by any edit. This groups same-line
+// fragments that sit right next to each other into a single editable unit.
+function mergeAdjacentTextItems(rawItems){
+  const sorted = [...rawItems].sort((a,b) => {
+    if(Math.abs(a.pdfY - b.pdfY) > 2) return b.pdfY - a.pdfY;
+    return a.pdfX - b.pdfX;
+  });
+  const merged = [];
+  for(const it of sorted){
+    const prev = merged[merged.length-1];
+    if(prev && Math.abs(prev.pdfY - it.pdfY) <= 2){
+      const gap = it.pdfX - (prev.pdfX + prev.pdfWidth);
+      const avgHeight = (prev.pdfHeight + it.pdfHeight) / 2;
+      // small gap relative to text size, and no space already between them -> same word, merge
+      if(gap < avgHeight * 0.15 && gap > -avgHeight * 0.5 && !prev.str.endsWith(' ') && !it.str.startsWith(' ')){
+        prev.str += it.str;
+        prev.pdfWidth = (it.pdfX + it.pdfWidth) - prev.pdfX;
+        prev.pdfHeight = Math.max(prev.pdfHeight, it.pdfHeight);
+        continue;
+      }
+    }
+    merged.push({...it});
+  }
+  return merged;
+}
+
 async function drawPreviewCanvas(){
   const myGen = ++previewRenderGen;
   const canvas = document.getElementById('preview-canvas');
@@ -784,7 +814,7 @@ async function drawPreviewCanvas(){
   if(!state.pageItemsCache[state.previewPageIndex]){
     const content = await page.getTextContent();
     if(myGen !== previewRenderGen) return;
-    state.pageItemsCache[state.previewPageIndex] = content.items
+    const rawItems = content.items
       .filter(it => it.str.trim() !== '')
       .map(it => ({
         str: it.str,
@@ -792,8 +822,8 @@ async function drawPreviewCanvas(){
         pdfY: it.transform[5],
         pdfWidth: it.width,
         pdfHeight: it.height || Math.abs(it.transform[3]) || 12,
-        removed: false
       }));
+    state.pageItemsCache[state.previewPageIndex] = mergeAdjacentTextItems(rawItems).map(it => ({...it, removed:false}));
   }
   const pageItems = state.pageItemsCache[state.previewPageIndex];
 
@@ -872,7 +902,7 @@ function checkThaiFontMismatch(text){
 }
 
 async function applyReplaceText(){
-  if(state.isSaving) return; // ignore rapid repeat clicks while an edit is already in progress
+  if(state.isSaving){ showToast('ระบบกำลังประมวลผลอยู่ กรุณารอสักครู่แล้วลองใหม่', 'warn'); return; }
   if(state.selectedItemIndex === null){ showToast('กรุณาเลือกข้อความที่ต้องการแก้ไขก่อน', 'warn'); return; }
   const editedIndex = state.selectedItemIndex;
   const item = state.currentPageTextItems[editedIndex];
@@ -917,9 +947,11 @@ async function applyReplaceText(){
       if(newText.trim()){ cacheEntry.str = newText; }
       else { cacheEntry.removed = true; }
     }
+    // the actual edit is now safely committed to state.editDoc — unblock further
+    // edits immediately rather than waiting on the (purely cosmetic) thumbnail refresh
+    state.isSaving = false;
     await refreshEditThumbnails();
     setLoading(false);
-    state.isSaving = false;
     showToast('แก้ไขข้อความสำเร็จ — เลือกคำถัดไปเพื่อแก้ไขต่อได้เลย', 'ok');
   }catch(err){
     setLoading(false);
@@ -930,7 +962,7 @@ async function applyReplaceText(){
 }
 
 async function applyDeleteText(){
-  if(state.isSaving) return;
+  if(state.isSaving){ showToast('ระบบกำลังประมวลผลอยู่ กรุณารอสักครู่แล้วลองใหม่', 'warn'); return; }
   if(state.selectedItemIndex === null) return;
   const editedIndex = state.selectedItemIndex;
   const item = state.currentPageTextItems[editedIndex];
@@ -951,9 +983,9 @@ async function applyDeleteText(){
     state.editCount++;
     const cacheEntry = state.pageItemsCache[state.previewPageIndex][editedIndex];
     if(cacheEntry) cacheEntry.removed = true;
+    state.isSaving = false;
     await refreshEditThumbnails();
     setLoading(false);
-    state.isSaving = false;
     showToast('ลบข้อความสำเร็จ', 'ok');
   }catch(err){
     setLoading(false);
@@ -964,7 +996,7 @@ async function applyDeleteText(){
 }
 
 async function applyAddText(){
-  if(state.isSaving) return;
+  if(state.isSaving){ showToast('ระบบกำลังประมวลผลอยู่ กรุณารอสักครู่แล้วลองใหม่', 'warn'); return; }
   if(!state.placedPoint){ showToast('กรุณาคลิกบนหน้าเอกสารเพื่อกำหนดตำแหน่งก่อน', 'warn'); return; }
   const text = document.getElementById('tf-text').value;
   if(!text.trim()){ showToast('กรุณากรอกข้อความ', 'warn'); return; }
@@ -988,9 +1020,9 @@ async function applyAddText(){
     state.placedPoint = null;
     state.editCount++;
     document.getElementById('tf-text').value = '';
+    state.isSaving = false;
     await refreshEditThumbnails();
     setLoading(false);
-    state.isSaving = false;
     showToast('เพิ่มข้อความสำเร็จ — คลิกตำแหน่งถัดไปเพื่อเพิ่มต่อได้เลย', 'ok');
   }catch(err){
     setLoading(false);
@@ -1114,7 +1146,7 @@ async function applyWatermark(){
   const colorHex = document.getElementById('wm-color').value.trim() || '#666666';
   if(!text){ showToast('กรุณากรอกข้อความลายน้ำ', 'warn'); return; }
   if(!checkThaiFontMismatch(text)) return;
-  if(state.isSaving) return;
+  if(state.isSaving){ showToast('ระบบกำลังประมวลผลอยู่ กรุณารอสักครู่แล้วลองใหม่', 'warn'); return; }
 
   state.isSaving = true;
   setLoading(true, 'กำลังใส่ลายน้ำ...');
@@ -1135,10 +1167,10 @@ async function applyWatermark(){
       });
     });
     state.editCount++;
+    state.isSaving = false;
     await refreshEditThumbnails();
     state.showWatermarkForm = false;
     setLoading(false);
-    state.isSaving = false;
     showToast('ใส่ลายน้ำสำเร็จ', 'ok');
   }catch(err){
     setLoading(false);
