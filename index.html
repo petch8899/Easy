@@ -347,6 +347,7 @@ const fontBytesCache = {}; // key: "<fontKey>-regular"|"<fontKey>-bold" -> Array
 
 const state = {
   loading: false,
+  isSaving: false,          // prevents overlapping edit operations from double-clicks / rapid re-clicks
   loadingMsg: '',
   toast: null,
   dragVeil: false,
@@ -536,7 +537,7 @@ function renderTopnav(){
         <label class="btn btn-ghost btn-sm">${ICONS.upload} เปิดไฟล์ใหม่
           <input type="file" accept="application/pdf" style="display:none" onchange="handleReplaceFileInput(event)">
         </label>
-        <button class="btn btn-primary btn-sm" onclick="downloadEditedPdf()">${ICONS.download} ดาวน์โหลด PDF</button>
+        <button class="btn btn-primary btn-sm" onclick="downloadEditedPdf()" ${state.isSaving?'disabled':''}>${ICONS.download} ดาวน์โหลด PDF</button>
       </div>
     ` : ''}
   </div>`;
@@ -871,12 +872,14 @@ function checkThaiFontMismatch(text){
 }
 
 async function applyReplaceText(){
+  if(state.isSaving) return; // ignore rapid repeat clicks while an edit is already in progress
   if(state.selectedItemIndex === null){ showToast('กรุณาเลือกข้อความที่ต้องการแก้ไขก่อน', 'warn'); return; }
   const editedIndex = state.selectedItemIndex;
   const item = state.currentPageTextItems[editedIndex];
   const newText = document.getElementById('et-text').value;
   if(newText.trim() && !checkThaiFontMismatch(newText)) return;
 
+  state.isSaving = true;
   setLoading(true, 'กำลังโหลดฟอนต์และแก้ไขข้อความ...');
   try{
     const page = state.editDoc.getPage(state.previewPageIndex);
@@ -888,10 +891,10 @@ async function applyReplaceText(){
     }
 
     page.drawRectangle({
-      x: item.pdfX - 1.5,
-      y: item.pdfY - item.pdfHeight * 0.28,
-      width: item.pdfWidth + 3,
-      height: item.pdfHeight * 1.3,
+      x: item.pdfX - 3,
+      y: item.pdfY - item.pdfHeight * 0.32,
+      width: item.pdfWidth + 6,
+      height: item.pdfHeight * 1.4,
       color: PDFLib.rgb(cover.r, cover.g, cover.b)
     });
     if(font){
@@ -916,27 +919,31 @@ async function applyReplaceText(){
     }
     await refreshEditThumbnails();
     setLoading(false);
+    state.isSaving = false;
     showToast('แก้ไขข้อความสำเร็จ — เลือกคำถัดไปเพื่อแก้ไขต่อได้เลย', 'ok');
   }catch(err){
     setLoading(false);
+    state.isSaving = false;
     showToast('แก้ไขข้อความไม่สำเร็จ: ' + (err && err.message ? err.message : 'เกิดข้อผิดพลาด'), 'warn');
     console.error(err);
   }
 }
 
 async function applyDeleteText(){
+  if(state.isSaving) return;
   if(state.selectedItemIndex === null) return;
   const editedIndex = state.selectedItemIndex;
   const item = state.currentPageTextItems[editedIndex];
+  state.isSaving = true;
   setLoading(true, 'กำลังลบข้อความ...');
   try{
     const page = state.editDoc.getPage(state.previewPageIndex);
     const cover = hexToRgb(state.toolCoverColor);
     page.drawRectangle({
-      x: item.pdfX - 1.5,
-      y: item.pdfY - item.pdfHeight * 0.28,
-      width: item.pdfWidth + 3,
-      height: item.pdfHeight * 1.3,
+      x: item.pdfX - 3,
+      y: item.pdfY - item.pdfHeight * 0.32,
+      width: item.pdfWidth + 6,
+      height: item.pdfHeight * 1.4,
       color: PDFLib.rgb(cover.r, cover.g, cover.b)
     });
     state.selectedItemIndex = null;
@@ -946,20 +953,24 @@ async function applyDeleteText(){
     if(cacheEntry) cacheEntry.removed = true;
     await refreshEditThumbnails();
     setLoading(false);
+    state.isSaving = false;
     showToast('ลบข้อความสำเร็จ', 'ok');
   }catch(err){
     setLoading(false);
+    state.isSaving = false;
     showToast('ลบข้อความไม่สำเร็จ: ' + (err && err.message ? err.message : 'เกิดข้อผิดพลาด'), 'warn');
     console.error(err);
   }
 }
 
 async function applyAddText(){
+  if(state.isSaving) return;
   if(!state.placedPoint){ showToast('กรุณาคลิกบนหน้าเอกสารเพื่อกำหนดตำแหน่งก่อน', 'warn'); return; }
   const text = document.getElementById('tf-text').value;
   if(!text.trim()){ showToast('กรุณากรอกข้อความ', 'warn'); return; }
   if(!checkThaiFontMismatch(text)) return;
 
+  state.isSaving = true;
   setLoading(true, 'กำลังโหลดฟอนต์และเพิ่มข้อความ...');
   try{
     const font = await embedSelectedFont(state.toolFont, state.toolBold);
@@ -979,9 +990,11 @@ async function applyAddText(){
     document.getElementById('tf-text').value = '';
     await refreshEditThumbnails();
     setLoading(false);
+    state.isSaving = false;
     showToast('เพิ่มข้อความสำเร็จ — คลิกตำแหน่งถัดไปเพื่อเพิ่มต่อได้เลย', 'ok');
   }catch(err){
     setLoading(false);
+    state.isSaving = false;
     showToast('เพิ่มข้อความไม่สำเร็จ: ' + (err && err.message ? err.message : 'เกิดข้อผิดพลาด'), 'warn');
     console.error(err);
   }
@@ -1101,7 +1114,9 @@ async function applyWatermark(){
   const colorHex = document.getElementById('wm-color').value.trim() || '#666666';
   if(!text){ showToast('กรุณากรอกข้อความลายน้ำ', 'warn'); return; }
   if(!checkThaiFontMismatch(text)) return;
+  if(state.isSaving) return;
 
+  state.isSaving = true;
   setLoading(true, 'กำลังใส่ลายน้ำ...');
   try{
     const font = await embedSelectedFont(state.toolFont, state.toolBold);
@@ -1123,9 +1138,11 @@ async function applyWatermark(){
     await refreshEditThumbnails();
     state.showWatermarkForm = false;
     setLoading(false);
+    state.isSaving = false;
     showToast('ใส่ลายน้ำสำเร็จ', 'ok');
   }catch(err){
     setLoading(false);
+    state.isSaving = false;
     showToast('ใส่ลายน้ำไม่สำเร็จ: ' + (err && err.message ? err.message : 'เกิดข้อผิดพลาด'), 'warn');
     console.error(err);
   }
@@ -1133,6 +1150,7 @@ async function applyWatermark(){
 
 // ================= DOWNLOAD =================
 async function downloadEditedPdf(){
+  if(state.isSaving){ showToast('กรุณารอให้การแก้ไขปัจจุบันเสร็จก่อน', 'warn'); return; }
   setLoading(true, 'กำลังสร้างไฟล์ PDF...');
   try{
     const bytes = await state.editDoc.save();
